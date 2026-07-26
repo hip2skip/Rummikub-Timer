@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#111111">
+<title>Rummikub Timer</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; min-height: 100vh; min-height: 100dvh;
+    background: #111; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex; justify-content: center;
+  }
+  .app { width: 100%; max-width: 560px; padding: max(24px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom)); }
+  h1 { text-align:center; margin: 10px 0 24px; font-size: 32px; }
+  h2 { margin: 0 0 14px; }
+  .card { background:#1d1d1f; border-radius:20px; padding:22px; margin-bottom:16px; }
+  label { display:block; font-size:18px; margin-bottom:8px; }
+  input {
+    width:100%; padding:15px; border-radius:12px; border:1px solid #555;
+    background:#2c2c2e; color:#fff; font-size:20px;
+  }
+  button {
+    width:100%; border:0; border-radius:16px; padding:18px 14px;
+    font-size:21px; font-weight:700; margin-top:12px; cursor:pointer;
+    background:#0a84ff; color:white;
+  }
+  button:active { transform:scale(.98); opacity:.85; }
+  .secondary { background:#3a3a3c; }
+  .danger { background:#ff453a; }
+  .player-row { margin:12px 0; }
+  #game { display:none; text-align:center; }
+  #player { font-size:38px; font-weight:800; margin:15px 0 5px; overflow-wrap:anywhere; }
+  #round { font-size:17px; color:#aaa; margin-bottom:12px; }
+  #timer {
+    font-variant-numeric: tabular-nums;
+    font-size:110px; line-height:1; font-weight:800; margin:24px 0;
+  }
+  #timer.warning { color:#ff9f0a; }
+  #timer.urgent { color:#ff453a; }
+  .actions { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .actions button { margin:0; min-height:72px; }
+  #message { min-height:28px; color:#aaa; margin-top:16px; }
+  #finished { display:none; text-align:center; }
+  .small { color:#aaa; font-size:15px; line-height:1.4; }
+</style>
+</head>
+<body>
+<div class="app">
+  <section id="setup">
+    <h1>Rummikub Timer</h1>
+    <div class="card">
+      <h2>Spieler</h2>
+      <label for="count">Anzahl der Spieler</label>
+      <input id="count" type="number" min="2" max="20" value="4" inputmode="numeric">
+      <button id="namesBtn">Spielernamen eingeben</button>
+      <div id="names"></div>
+      <button id="startBtn" style="display:none">▶ Start</button>
+    </div>
+    <p class="small">Jeder Spieler hat maximal 1 Minute. Mit „Weiter“ wird nur zum nächsten Spieler gewechselt. Mit „Fertig“ scheidet der aktuelle Spieler aus.</p>
+  </section>
+
+  <section id="game">
+    <div class="card">
+      <div id="round"></div>
+      <div id="player"></div>
+      <div id="timer">1:00</div>
+      <div class="actions">
+        <button id="nextBtn">Weiter</button>
+        <button id="doneBtn" class="danger">Fertig</button>
+      </div>
+      <div id="message"></div>
+    </div>
+  </section>
+
+  <section id="finished">
+    <div class="card">
+      <h1>🎉 Spiel beendet</h1>
+      <p id="winner"></p>
+      <button onclick="location.reload()">Neues Spiel</button>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const setup = document.getElementById('setup');
+  const game = document.getElementById('game');
+  const finished = document.getElementById('finished');
+  const countInput = document.getElementById('count');
+  const namesDiv = document.getElementById('names');
+  const namesBtn = document.getElementById('namesBtn');
+  const startBtn = document.getElementById('startBtn');
+  const playerEl = document.getElementById('player');
+  const roundEl = document.getElementById('round');
+  const timerEl = document.getElementById('timer');
+  const messageEl = document.getElementById('message');
+  const nextBtn = document.getElementById('nextBtn');
+  const doneBtn = document.getElementById('doneBtn');
+  const winnerEl = document.getElementById('winner');
+
+  let players = [];
+  let active = [];
+  let index = 0;
+  let round = 1;
+  let seconds = 60;
+  let interval = null;
+  let audioCtx = null;
+
+  namesBtn.addEventListener('click', () => {
+    let count = parseInt(countInput.value, 10);
+    if (!Number.isInteger(count) || count < 2 || count > 20) {
+      alert('Bitte eine Spielerzahl zwischen 2 und 20 eingeben.');
+      return;
+    }
+    namesDiv.innerHTML = '';
+    for (let i = 0; i < count; i++) {
+      const row = document.createElement('div');
+      row.className = 'player-row';
+      row.innerHTML = `<label>Spieler ${i + 1}</label>
+        <input class="name" type="text" placeholder="Name" autocomplete="off">`;
+      namesDiv.appendChild(row);
+    }
+    startBtn.style.display = 'block';
+    namesDiv.querySelector('.name').focus();
+  });
+
+  startBtn.addEventListener('click', () => {
+    const fields = [...document.querySelectorAll('.name')];
+    players = fields.map((x, i) => x.value.trim() || `Spieler ${i + 1}`);
+    active = players.map((name, id) => ({name, id}));
+    index = 0; round = 1;
+    setup.style.display = 'none';
+    game.style.display = 'block';
+    activateAudio();
+    startTurn();
+  });
+
+  function activateAudio() {
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    } catch(e) {}
+  }
+
+  function beep() {
+    try {
+      if (!audioCtx) activateAudio();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.001, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.35, audioCtx.currentTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.45);
+      osc.connect(gain); gain.connect(audioCtx.destination);
+      osc.start(); osc.stop(audioCtx.currentTime + 0.5);
+    } catch(e) {
+      // iOS may block audio until a user interaction; the next button press re-enables it.
+    }
+    if (navigator.vibrate) navigator.vibrate([150, 80, 150]);
+  }
+
+  function formatTime(s) {
+    return `0:${String(s).padStart(2, '0')}`;
+  }
+
+  function render() {
+    playerEl.textContent = active[index].name;
+    roundEl.textContent = `Runde ${round} · ${active.length} Spieler aktiv`;
+    timerEl.textContent = formatTime(seconds);
+    timerEl.classList.toggle('warning', seconds <= 20 && seconds > 5);
+    timerEl.classList.toggle('urgent', seconds <= 5);
+  }
+
+  function startTurn() {
+    clearInterval(interval);
+    seconds = 60;
+    messageEl.textContent = '';
+    render();
+
+    interval = setInterval(() => {
+      seconds--;
+      render();
+      if (seconds <= 0) {
+        clearInterval(interval);
+        beep();
+        messageEl.textContent = 'Zeit abgelaufen – nächster Spieler';
+        setTimeout(() => advance(false), 450);
+      }
+    }, 1000);
+  }
+
+  function advance(eliminate) {
+    clearInterval(interval);
+    if (eliminate) {
+      const removed = active[index].name;
+      active.splice(index, 1);
+      if (active.length <= 1) {
+        finishGame(removed);
+        return;
+      }
+      if (index >= active.length) index = 0;
+      if (index === 0) round++;
+    } else {
+      index++;
+      if (index >= active.length) {
+        index = 0;
+        round++;
+      }
+    }
+    beep();
+    startTurn();
+  }
+
+  function finishGame(lastFinished) {
+    clearInterval(interval);
+    game.style.display = 'none';
+    finished.style.display = 'block';
+    const remaining = active[0]?.name || '';
+    winnerEl.innerHTML = remaining
+      ? `<strong>${remaining}</strong> ist der letzte verbleibende Spieler.`
+      : 'Das Spiel ist beendet.';
+  }
+
+  nextBtn.addEventListener('click', () => {
+    activateAudio();
+    advance(false);
+  });
+
+  doneBtn.addEventListener('click', () => {
+    activateAudio();
+    advance(true);
+  });
+})();
+</script>
+</body>
+</html>
